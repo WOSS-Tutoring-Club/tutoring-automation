@@ -6,6 +6,7 @@ import { useEffect, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { supabase as sharedSupabase } from '@/services/supabase';
 import { useAuth } from '@/app/providers';
+import Link from 'next/link';
 
 // Embedded subject options per spec
 const SUBJECT_NAMES = ['Math','English','Science'];
@@ -52,7 +53,6 @@ export default function EditTutorPage() {
   const [selectedSubjectName, setSelectedSubjectName] = useState('');
   const [selectedSubjectType, setSelectedSubjectType] = useState('');
   const [selectedSubjectGrade, setSelectedSubjectGrade] = useState('');
-  // IB level (HL/SL) when admin selects IB type
   const [selectedIbLevel, setSelectedIbLevel] = useState('');
   
   const { user, isLoading: authLoading } = useAuth();
@@ -61,10 +61,7 @@ export default function EditTutorPage() {
   const tutorId = params.id as string;
   const supabase = sharedSupabase;
 
-  // Subjects are loaded from backend into tutorData.available_subjects
-
   useEffect(() => {
-    // Wait for auth to finish loading before trying to load data
     if (!authLoading) {
       loadTutorData();
     }
@@ -72,448 +69,322 @@ export default function EditTutorPage() {
 
   const loadTutorData = async () => {
     try {
-      console.log('🔍 TUTOR EDIT DEBUG: Starting loadTutorData...');
-      console.log('🔍 TUTOR EDIT DEBUG: Auth loading:', authLoading);
-      console.log('🔍 TUTOR EDIT DEBUG: User exists:', !!user);
-      console.log('🔍 TUTOR EDIT DEBUG: Tutor ID:', tutorId);
-      
       setLoading(true);
       
-      // Wait for auth to finish loading
-      if (authLoading) {
-        console.log('🔍 TUTOR EDIT DEBUG: Auth still loading, waiting...');
-        return;
-      }
+      if (authLoading) return;
       
       if (!user) {
-        console.log('🔍 TUTOR EDIT DEBUG: No user, redirecting to login');
         router.push('/auth/login');
         return;
       }
 
       const { data: { session } } = await supabase.auth.getSession();
       const token = session?.access_token ?? '';
-      // Fetch via backend endpoints (service role)
+      
       const [tutorResp, subjectsResp, approvalsResp] = await Promise.all([
         fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/tutors/${tutorId}`, { headers: { Authorization: `Bearer ${token}` } }),
         fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/subjects`, { headers: { Authorization: `Bearer ${token}` } }),
-        fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/tutors/${tutorId}/approvals`, { headers: { Authorization: `Bearer ${token}` } }),
+        fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/tutors/${tutorId}/approvals`, { headers: { Authorization: `Bearer ${token}` } })
       ]);
-      if (!tutorResp.ok) throw new Error('Tutor not found');
-      const tutorJson = await tutorResp.json();
-      const subjectsJson = subjectsResp.ok ? await subjectsResp.json() : { subjects: [] };
-      const approvalsJson = approvalsResp.ok ? await approvalsResp.json() : { subject_approvals: [] };
 
-      const structuredData = {
-        tutor: tutorJson.tutor,
-        subject_approvals: approvalsJson.subject_approvals || [],
-        // Normalize available subjects to a simple array of names from backend; fallback handled in UI
-        available_subjects: Array.isArray(subjectsJson.subjects)
-          ? subjectsJson.subjects.map((s: any) => s?.name).filter(Boolean)
-          : [],
-      };
-      setTutorData(structuredData);
+      if (!tutorResp.ok) throw new Error('Failed to load tutor');
+      const tutorJson = await tutorResp.json();
       
-    } catch (err) {
-      console.error('🔍 TUTOR EDIT DEBUG: Error loading tutor data:', err);
-      setError('Failed to load tutor data');
+      const subjectsJson = subjectsResp.ok ? await subjectsResp.json() : { subjects: [] };
+      const approvalsJson = approvalsResp.ok ? await approvalsResp.json() : { approvals: [] };
+
+      setTutorData({
+        tutor: tutorJson.tutor,
+        subject_approvals: approvalsJson.approvals || [],
+        available_subjects: subjectsJson.subjects || []
+      });
+    } catch (e: any) {
+      setError(e.message || 'Failed to load tutor data');
     } finally {
       setLoading(false);
     }
   };
 
-  const updateSubjectApproval = async (subject: {name:string,type:string,grade:string}, action: 'approve' | 'reject' | 'remove') => {
-    try {
-      console.log('🔍 TUTOR EDIT DEBUG: Updating subject approval:', { subject, action });
-      setUpdating(`${subject.name}-${subject.type}-${subject.grade}`);
-      
-      if (!user) {
-        router.push('/auth/login');
-        return;
-      }
-
-      if (action === 'remove') {
-        // Remove the subject approval
-        console.log('🔍 TUTOR EDIT DEBUG: Attempting to remove approval for:', { tutorId, subject });
-        
-        const { data: { session } } = await supabase.auth.getSession();
-        const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/tutors/${tutorId}/subjects`, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${session?.access_token ?? ''}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'remove',
-            subject_name: subject.name,
-            subject_type: subject.type,
-            subject_grade: subject.grade,
-          })
-        });
-        if (!resp.ok) throw new Error('Failed to remove subject approval');
-        console.log('🔍 TUTOR EDIT DEBUG: Subject approval removed successfully');
-      } else {
-        const { data: { session } } = await supabase.auth.getSession();
-        const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/tutors/${tutorId}/subjects`, {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${session?.access_token ?? ''}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action,
-            subject_name: subject.name,
-            subject_type: subject.type,
-            subject_grade: subject.grade,
-          })
-        });
-        if (!resp.ok) throw new Error('Failed to update subject approval');
-      }
-
-      // Reload tutor data to reflect changes
-      await loadTutorData();
-      
-    } catch (err) {
-      console.error('🔍 TUTOR EDIT DEBUG: Error updating subject approval:', err);
-      setError(`Failed to update subject approval: ${err.message}`);
-    } finally {
-      setUpdating(null);
+  const handleAddApproval = async () => {
+    if (!selectedSubjectName || !selectedSubjectType || !selectedSubjectGrade) {
+      alert('Please select all subject fields');
+      return;
     }
-  };
 
-  const updateTutorStatus = async (status: 'active' | 'pending' | 'suspended') => {
     try {
-      console.log('🔍 TUTOR EDIT DEBUG: Updating tutor status:', { tutorId, status });
-      setUpdating('status');
-      
-      if (!user) {
-        router.push('/auth/login');
-        return;
-      }
-
-      // Update tutor status via backend (service role)
+      setUpdating('adding');
       const { data: { session } } = await supabase.auth.getSession();
-      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/tutors/${tutorId}/status`, {
-        method: 'PUT',
-        headers: { 'Authorization': `Bearer ${session?.access_token ?? ''}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status })
-      });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(`Failed to update tutor status: ${err.error || resp.statusText}`);
-      }
-
-      console.log('🔍 TUTOR EDIT DEBUG: Tutor status updated successfully');
-
-      // Reload tutor data to reflect changes
-      await loadTutorData();
+      const token = session?.access_token ?? '';
       
-    } catch (err) {
-      console.error('🔍 TUTOR EDIT DEBUG: Error updating tutor status:', err);
-      setError(`Failed to update tutor status: ${err.message}`);
-    } finally {
-      setUpdating(null);
-    }
-  };
-
-  const addCertification = async () => {
-    try {
-      console.log('🔍 TUTOR EDIT DEBUG: Adding certification:', { selectedSubjectName, selectedSubjectType, selectedSubjectGrade, selectedIbLevel });
-      setUpdating('add-cert');
-      
-      if (!user) {
-        router.push('/auth/login');
-        return;
-      }
-
-      if (!selectedSubjectName || !selectedSubjectType || !selectedSubjectGrade) {
-        throw new Error('Please select subject, type, and grade');
-      }
-
-      // Build final subject name; append IB level when applicable
-      const finalSubjectName = selectedSubjectType === 'IB' && selectedIbLevel
-        ? `${selectedSubjectName} ${selectedIbLevel}`
-        : selectedSubjectName;
-
-      console.log('🔍 TUTOR EDIT DEBUG: Approving subject via backend by embedded fields');
-      const { data: { session } } = await supabase.auth.getSession();
-      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/tutors/${tutorId}/subjects`, {
+      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/tutors/${tutorId}/approvals`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${session?.access_token ?? ''}`, 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          action: 'approve',
-          subject_name: finalSubjectName,
+          subject_name: selectedSubjectName,
           subject_type: selectedSubjectType,
           subject_grade: selectedSubjectGrade,
+          ib_level: selectedSubjectType === 'IB' ? selectedIbLevel : null
         })
       });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.error || 'Failed to add certification');
-      }
-      
-      console.log('🔍 TUTOR EDIT DEBUG: Certification added successfully');
 
-      // Clear the form
+      if (!resp.ok) {
+        const j = await resp.json().catch(()=>({}));
+        throw new Error(j.error || 'Failed to add approval');
+      }
+
+      // Reset form
       setSelectedSubjectName('');
       setSelectedSubjectType('');
       setSelectedSubjectGrade('');
       setSelectedIbLevel('');
-
-      // Reload tutor data to reflect changes
-      await loadTutorData();
       
-    } catch (err) {
-      console.error('🔍 TUTOR EDIT DEBUG: Error adding certification:', err);
-      setError(`Failed to add certification: ${err.message}`);
+      // Reload data
+      await loadTutorData();
+    } catch (e: any) {
+      alert(e.message || 'Failed to add approval');
     } finally {
       setUpdating(null);
     }
   };
 
-  const removeCertification = async (subjectId: string) => {
+  const handleRemoveApproval = async (approvalId: string) => {
+    if (!confirm('Are you sure you want to remove this approval?')) return;
+
     try {
-      console.log('🔍 TUTOR EDIT DEBUG: Removing certification for subject:', subjectId);
-      setUpdating(subjectId);
-      
-      if (!user) {
-        router.push('/auth/login');
-        return;
-      }
-
+      setUpdating(approvalId);
       const { data: { session } } = await supabase.auth.getSession();
-      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/tutors/${tutorId}/subjects`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${session?.access_token ?? ''}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'remove', subject_id: subjectId })
+      const token = session?.access_token ?? '';
+      
+      const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/admin/tutors/${tutorId}/approvals/${approvalId}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` }
       });
+
       if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.error || 'Failed to remove certification');
+        const j = await resp.json().catch(()=>({}));
+        throw new Error(j.error || 'Failed to remove approval');
       }
 
-      console.log('🔍 TUTOR EDIT DEBUG: Certification removed successfully');
-
-      // Reload tutor data to reflect changes
       await loadTutorData();
-      
-    } catch (err) {
-      console.error('🔍 TUTOR EDIT DEBUG: Error removing certification:', err);
-      setError(`Failed to remove certification: ${err.message}`);
+    } catch (e: any) {
+      alert(e.message || 'Failed to remove approval');
     } finally {
       setUpdating(null);
     }
   };
-
-  const getApprovalForSubject = (subject: {name:string,type:string,grade:string}): SubjectApproval | null => {
-    return tutorData?.subject_approvals.find(approval => approval.subject_name === subject.name && approval.subject_type === subject.type && approval.subject_grade === subject.grade) || null;
-  };
-
-  const groupSubjectsByCategory = () => ({ });
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-white flex items-center justify-center">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading tutor data...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mx-auto"></div>
+          <p className="mt-4 text-gray-800">Loading tutor information...</p>
         </div>
       </div>
     );
   }
 
-  if (error || !tutorData) {
+  if (error || !tutorData?.tutor) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+      <div className="min-h-screen bg-white flex items-center justify-center">
         <div className="text-center">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+            </svg>
+          </div>
           <p className="text-red-600 mb-4">{error || 'Tutor not found'}</p>
-          <button
-            onClick={() => router.back()}
-            className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+          <button 
+            onClick={() => router.back()} 
+            className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-blue-600 bg-blue-100 hover:bg-blue-200"
           >
-            Go Back
+            ← Go Back
           </button>
         </div>
       </div>
     );
   }
 
-  const { tutor } = tutorData;
-  const groupedSubjects = groupSubjectsByCategory();
+  const { tutor, subject_approvals, available_subjects } = tutorData;
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-white">
       {/* Header */}
-      <header className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between items-center py-6">
-            <div>
-              <button
-                onClick={() => router.back()}
-                className="text-blue-600 hover:text-blue-800 mb-2"
+      <header className="bg-white border-b border-gray-100">
+        <div className="max-w-7xl mx-auto px-6 py-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <Link
+                href={`/admin/tutors/${tutor.id}`}
+                className="inline-flex items-center px-3 py-2 border border-gray-300 text-sm font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50"
               >
-                ← Back to Dashboard
-              </button>
-              <h1 className="text-3xl font-bold text-gray-900">
-                Edit Tutor: {tutor.first_name} {tutor.last_name}
-              </h1>
-              <p className="text-gray-600">
-                {tutor.school?.name || 'Not assigned'} - {tutor.email}
-              </p>
+                ← Back to Profile
+              </Link>
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900">Edit Certifications</h1>
+                <p className="text-gray-600">{tutor.first_name} {tutor.last_name} • {tutor.school?.name}</p>
+              </div>
             </div>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          
-          {/* Tutor Status */}
-          <div className="bg-white shadow overflow-hidden sm:rounded-lg mb-8">
-            <div className="px-4 py-5 sm:px-6">
-              <h3 className="text-lg leading-6 font-medium text-gray-900">
-                Tutor Status
-              </h3>
-              <p className="mt-1 max-w-2xl text-sm text-gray-500">
-                Update the tutor's account status
-              </p>
-            </div>
-            <div className="border-t border-gray-200 px-4 py-5 sm:p-6">
-              <div className="flex items-center space-x-4">
-                <span className="text-sm font-medium text-gray-700">Current Status:</span>
-                <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                  tutor.status === 'active' ? 'bg-green-100 text-green-800' :
-                  tutor.status === 'pending' ? 'bg-yellow-100 text-yellow-800' :
-                  'bg-red-100 text-red-800'
-                }`}>
-                  {tutor.status}
-                </span>
+      <main className="max-w-7xl mx-auto py-8 px-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* Current Approvals */}
+          <div>
+            <div className="bg-white border-2 border-gray-100 rounded-xl overflow-hidden">
+              <div className="px-6 py-4 border-b border-gray-100">
+                <h2 className="text-lg font-semibold text-gray-900">Current Certifications</h2>
+                <p className="text-sm text-gray-600">Subjects this tutor is approved to teach</p>
               </div>
-              <div className="mt-4 flex space-x-3">
-                {['active', 'pending', 'suspended'].map((status) => (
-                  <button
-                    key={status}
-                    onClick={() => updateTutorStatus(status as any)}
-                    disabled={tutor.status === status || updating === 'status'}
-                    className={`px-4 py-2 text-sm font-medium rounded-md ${
-                      tutor.status === status
-                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                        : status === 'active'
-                        ? 'bg-green-600 text-white hover:bg-green-700'
-                        : status === 'pending'
-                        ? 'bg-yellow-600 text-white hover:bg-yellow-700'
-                        : 'bg-red-600 text-white hover:bg-red-700'
-                    }`}
-                  >
-                    {updating === 'status' ? 'Updating...' : `Set ${status}`}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Add New Certification (select embedded fields) */}
-          <div className="bg-white shadow overflow-hidden sm:rounded-lg mb-8">
-            <div className="px-4 py-5 sm:px-6">
-              <h3 className="text-lg leading-6 font-medium text-gray-900">
-                Add Subject Certification
-              </h3>
-              <p className="mt-1 max-w-2xl text-sm text-gray-500">
-                Certify this tutor for a specific subject
-              </p>
-            </div>
-            <div className="border-t border-gray-200 px-4 py-5 sm:p-6">
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Subject</label>
-                  <select value={selectedSubjectName} onChange={(e)=>setSelectedSubjectName(e.target.value)} className="block w-full px-3 py-2 border border-gray-300 rounded-md">
-                    <option value="">Select...</option>
-                    {(tutorData?.available_subjects && tutorData.available_subjects.length
-                      ? tutorData.available_subjects
-                      : SUBJECT_NAMES).map((s: string) => (
-                        <option key={s} value={s}>{s}</option>
-                      ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Type</label>
-                  <select value={selectedSubjectType} onChange={(e)=>{ setSelectedSubjectType(e.target.value); if (e.target.value !== 'IB') setSelectedIbLevel(''); }} className="block w-full px-3 py-2 border border-gray-300 rounded-md">
-                    <option value="">Select...</option>
-                    {SUBJECT_TYPES.map(s=> <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Grade</label>
-                  <select value={selectedSubjectGrade} onChange={(e)=>setSelectedSubjectGrade(e.target.value)} className="block w-full px-3 py-2 border border-gray-300 rounded-md">
-                    <option value="">Select...</option>
-                    {SUBJECT_GRADES.map(s=> <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <button onClick={addCertification} disabled={!selectedSubjectName || !selectedSubjectType || !selectedSubjectGrade || updating==='add-cert'} className="w-full px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50">{updating==='add-cert'?'Adding...':'Add Certification'}</button>
-                </div>
-              </div>
-              {selectedSubjectType === 'IB' && (
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end mt-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">IB Level</label>
-                    <select value={selectedIbLevel} onChange={(e)=>setSelectedIbLevel(e.target.value)} className="block w-full px-3 py-2 border border-gray-300 rounded-md" required>
-                      <option value="">Select...</option>
-                      {['SL','HL'].map(l=> <option key={l} value={l}>{l}</option>)}
-                    </select>
-                    <p className="mt-1 text-xs text-gray-500">Appends to subject name (e.g., "Math HL").</p>
+              
+              {subject_approvals.length === 0 ? (
+                <div className="px-6 py-8 text-center">
+                  <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" />
+                    </svg>
                   </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Current Certifications */}
-          <div className="bg-white shadow overflow-hidden sm:rounded-lg">
-            <div className="px-4 py-5 sm:px-6">
-              <h3 className="text-lg leading-6 font-medium text-gray-900">
-                Current Certifications
-              </h3>
-              <p className="mt-1 max-w-2xl text-sm text-gray-500">
-                Subjects and grade levels this tutor is certified to teach
-              </p>
-            </div>
-            <div className="border-t border-gray-200">
-                        {tutorData.subject_approvals.length === 0 ? (
-                <div className="px-4 py-8 text-center text-gray-500">
-                  No certifications yet. Add certifications using the form above.
+                  <h3 className="text-sm font-medium text-gray-900 mb-1">No certifications yet</h3>
+                  <p className="text-sm text-gray-500">Add certifications using the form on the right</p>
                 </div>
               ) : (
-                <div className="px-4 py-5 sm:px-6">
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {tutorData.subject_approvals.map((approval) => (
-                      <div key={approval.id} className="border rounded-lg p-4 bg-green-50">
-                        <div className="flex justify-between items-start mb-2">
-                          <div>
-                                      <h5 className="font-medium text-gray-900">{approval.subject_name} • {approval.subject_type}</h5>
-                            <p className="text-sm text-gray-600">Grade: {approval.subject_grade}</p>
-                          </div>
-                          <span className="px-2 py-1 text-xs font-semibold rounded-full bg-green-100 text-green-800">
-                            {approval.status}
-                          </span>
+                <div className="divide-y divide-gray-100">
+                  {subject_approvals.map((approval) => (
+                    <div key={approval.id} className="px-6 py-4 flex items-center justify-between hover:bg-gray-50 transition-colors">
+                      <div className="flex items-center">
+                        <div className="w-10 h-10 rounded-lg bg-green-100 flex items-center justify-center mr-4">
+                          <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
                         </div>
-                        
-                        {approval.approved_at && (
-                          <p className="text-xs text-gray-500 mb-2">
-                            Added: {new Date(approval.approved_at).toLocaleDateString()}
-                          </p>
-                        )}
-                        
-                        <button
-                                    onClick={() => updateSubjectApproval({ name: approval.subject_name, type: approval.subject_type, grade: approval.subject_grade }, 'remove')}
-                          disabled={updating === approval.id}
-                          className="px-3 py-1 text-xs font-medium text-white bg-red-600 rounded hover:bg-red-700 disabled:opacity-50"
-                        >
-                          {updating === approval.id ? 'Removing...' : 'Remove'}
-                        </button>
+                        <div>
+                          <div className="font-medium text-gray-900">
+                            {approval.subject_name} • {approval.subject_type}
+                          </div>
+                          <div className="text-sm text-gray-500">Grade {approval.subject_grade}</div>
+                        </div>
                       </div>
-                    ))}
-                  </div>
+                      <button
+                        onClick={() => handleRemoveApproval(approval.id)}
+                        disabled={updating === approval.id}
+                        className="text-red-600 hover:text-red-800 disabled:opacity-50"
+                      >
+                        {updating === approval.id ? (
+                          <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-red-600"></div>
+                        ) : (
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
           </div>
 
+          {/* Add New Certification */}
+          <div>
+            <div className="bg-white border-2 border-gray-100 rounded-xl p-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Add New Certification</h2>
+              <p className="text-sm text-gray-600 mb-6">Grant this tutor permission to teach a specific subject</p>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Subject</label>
+                  <select
+                    value={selectedSubjectName}
+                    onChange={(e) => setSelectedSubjectName(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">Select a subject</option>
+                    {SUBJECT_NAMES.map((name) => (
+                      <option key={name} value={name}>{name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Type</label>
+                  <select
+                    value={selectedSubjectType}
+                    onChange={(e) => {
+                      setSelectedSubjectType(e.target.value);
+                      if (e.target.value !== 'IB') setSelectedIbLevel('');
+                    }}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">Select a type</option>
+                    {SUBJECT_TYPES.map((type) => (
+                      <option key={type} value={type}>{type}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Grade</label>
+                  <select
+                    value={selectedSubjectGrade}
+                    onChange={(e) => setSelectedSubjectGrade(e.target.value)}
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                  >
+                    <option value="">Select a grade</option>
+                    {SUBJECT_GRADES.map((grade) => (
+                      <option key={grade} value={grade}>Grade {grade}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {selectedSubjectType === 'IB' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">IB Level</label>
+                    <select
+                      value={selectedIbLevel}
+                      onChange={(e) => setSelectedIbLevel(e.target.value)}
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="">Select IB level</option>
+                      <option value="HL">Higher Level (HL)</option>
+                      <option value="SL">Standard Level (SL)</option>
+                    </select>
+                  </div>
+                )}
+
+                <button
+                  onClick={handleAddApproval}
+                  disabled={updating === 'adding' || !selectedSubjectName || !selectedSubjectType || !selectedSubjectGrade}
+                  className="w-full mt-6 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                >
+                  {updating === 'adding' ? 'Adding...' : 'Add Certification'}
+                </button>
+              </div>
+            </div>
+
+            {/* Available Subjects Info */}
+            <div className="mt-6 bg-blue-50 border border-blue-200 rounded-xl p-4">
+              <div className="flex items-start">
+                <div className="flex-shrink-0">
+                  <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                </div>
+                <div className="ml-3">
+                  <h3 className="text-sm font-medium text-blue-900">Available Subjects</h3>
+                  <div className="mt-2 text-sm text-blue-700">
+                    <p>This tutor can be certified for any combination of:</p>
+                    <ul className="mt-1 list-disc list-inside space-y-1">
+                      <li>Math, English, or Science</li>
+                      <li>Academic, ALP, or IB types</li>
+                      <li>Grades 9-12</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </main>
     </div>

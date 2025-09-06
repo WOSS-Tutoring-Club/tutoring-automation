@@ -59,42 +59,25 @@ export default function LoginPage() {
         return;
       }
 
-      console.log("Sign in successful!");
+      console.log("Sign in successful! Ensuring server cookies then redirecting to root...");
 
-      // Wait a moment for the session to be processed, then redirect based on role
-      console.log("Waiting for session processing...");
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        // Proactively set server-side auth cookies to avoid first-login race conditions
+        await fetch('/auth/callback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ event: 'SIGNED_IN', session }),
+        });
+      } catch (e) {
+        // Non-fatal; middleware/listener may still handle it
+        console.log('Post-signin cookie sync failed (non-fatal):', e);
+      }
 
-      // Small delay to ensure session is properly set, then redirect
-      setTimeout(async () => {
-        console.log("Determining redirect destination via backend role endpoint...");
-
-        try {
-          const { data: { session } } = await supabase.auth.getSession();
-          if (!session) {
-            window.location.reload();
-            return;
-          }
-          // Do not auto-create a tutee on login; backend account creation is handled based on signup intent
-          const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/role`, {
-            headers: { Authorization: `Bearer ${session.access_token}` },
-            credentials: 'include',
-          });
-          if (!resp.ok) {
-            console.log('Role endpoint returned non-ok, reloading');
-            window.location.reload();
-            return;
-          }
-          const json = await resp.json();
-          const role = json.role;
-          if (role === 'admin') return router.push('/admin/dashboard');
-          if (role === 'tutor') return router.push('/tutor/dashboard');
-          if (role === 'tutee') return router.push('/tutee/dashboard');
-          window.location.reload();
-        } catch (error) {
-          console.error("Error determining redirect:", error);
-          window.location.reload();
-        }
-      }, 500);
+      // Let middleware and SupabaseListener handle role-based redirect from root/auth
+      router.replace('/');
+      return;
     } catch (err) {
       console.error("Login error:", err);
       setError("An unexpected error occurred");

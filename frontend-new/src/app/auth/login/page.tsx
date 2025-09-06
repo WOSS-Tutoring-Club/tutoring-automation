@@ -63,6 +63,110 @@ export default function LoginPage() {
 
       try {
         const { data: { session } } = await supabase.auth.getSession();
+
+        // If session isn't ready yet (first login race), wait for auth event and redirect then
+        if (!session?.access_token) {
+          try {
+            const { data: { subscription } } = supabase.auth.onAuthStateChange(
+              async (event, sess) => {
+                if (event === 'SIGNED_IN' || event === 'INITIAL_SESSION') {
+                  try {
+                    // Ensure backend account once more in case it wasn't created
+                    const token = sess?.access_token;
+                    if (token) {
+                      await fetch('/auth/callback', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        credentials: 'same-origin',
+                        body: JSON.stringify({ event: 'SIGNED_IN', session: sess }),
+                      });
+                      const r = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/role`, {
+                        headers: { Authorization: `Bearer ${token}` },
+                        credentials: 'include',
+                      });
+                      if (r.ok) {
+                        const j = await r.json();
+                        const role = j?.role;
+                        if (role === 'admin') { subscription.unsubscribe(); router.replace('/admin/dashboard'); return; }
+                        if (role === 'tutor') { subscription.unsubscribe(); router.replace('/tutor/dashboard'); return; }
+                        if (role === 'tutee') { subscription.unsubscribe(); router.replace('/tutee/dashboard'); return; }
+                      }
+                    }
+                  } catch {}
+                  // As last resort, go to root
+                  subscription.unsubscribe();
+                  if (typeof window !== 'undefined') window.location.replace('/'); else router.replace('/');
+                }
+              }
+            );
+            // Safety fallback timeout
+            setTimeout(() => {
+              try { subscription.unsubscribe(); } catch {}
+              if (typeof window !== 'undefined') window.location.replace('/'); else router.replace('/');
+            }, 1200);
+          } catch {}
+          return;
+        }
+
+        // Ensure backend account exists before role resolution (handles first-login race)
+        try {
+          const token = session?.access_token;
+          if (token) {
+            // Prefer localStorage hint saved during signup
+            let pendingType = null as unknown as 'tutor'|'tutee'|null;
+            let firstName: string | undefined;
+            let lastName: string | undefined;
+            let schoolId: string | undefined;
+            try {
+              pendingType = (typeof window !== 'undefined') ? (localStorage.getItem('signup_account_type') as any) : null;
+              firstName = (typeof window !== 'undefined') ? (localStorage.getItem('signup_first_name') || undefined) : undefined;
+              lastName = (typeof window !== 'undefined') ? (localStorage.getItem('signup_last_name') || undefined) : undefined;
+              schoolId = (typeof window !== 'undefined') ? (localStorage.getItem('signup_school_id') || undefined) : undefined;
+            } catch {}
+
+            // Fallback to user metadata
+            if (!pendingType) {
+              try {
+                const { data: { user } } = await supabase.auth.getUser();
+                const metaType = (user?.user_metadata as any)?.account_type;
+                if (metaType === 'tutor' || metaType === 'tutee') {
+                  pendingType = metaType;
+                  firstName = firstName || (user?.user_metadata as any)?.first_name;
+                  lastName = lastName || (user?.user_metadata as any)?.last_name;
+                  schoolId = schoolId || (user?.user_metadata as any)?.school_id;
+                }
+              } catch {}
+            }
+
+            if (pendingType) {
+              await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/account/ensure`, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json',
+                },
+                credentials: 'include',
+                body: JSON.stringify({
+                  account_type: pendingType,
+                  first_name: firstName,
+                  last_name: lastName,
+                  school_id: schoolId,
+                }),
+              });
+              try {
+                if (typeof window !== 'undefined') {
+                  localStorage.removeItem('signup_account_type');
+                  localStorage.removeItem('signup_first_name');
+                  localStorage.removeItem('signup_last_name');
+                  localStorage.removeItem('signup_school_id');
+                }
+              } catch {}
+            }
+          }
+        } catch (ensureErr) {
+          console.log('ensure account failed (non-fatal):', ensureErr);
+        }
+
         // Proactively set server-side auth cookies to avoid first-login race conditions
         await fetch('/auth/callback', {
           method: 'POST',
@@ -75,8 +179,32 @@ export default function LoginPage() {
         console.log('Post-signin cookie sync failed (non-fatal):', e);
       }
 
-      // Let middleware and SupabaseListener handle role-based redirect from root/auth
-      router.replace('/');
+      // Determine role directly and navigate immediately (robust against first-login races)
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (session?.access_token) {
+          const resp = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/auth/role`, {
+            headers: { Authorization: `Bearer ${session.access_token}` },
+            credentials: 'include',
+          });
+          if (resp.ok) {
+            const json = await resp.json();
+            const role = json?.role;
+            if (role === 'admin') { router.replace('/admin/dashboard'); return; }
+            if (role === 'tutor') { router.replace('/tutor/dashboard'); return; }
+            if (role === 'tutee') { router.replace('/tutee/dashboard'); return; }
+          }
+        }
+      } catch (e) {
+        console.log('Role fetch failed (non-fatal), falling back to root redirect');
+      }
+
+      // Fallback: hard navigation to root so middleware/listener run on a fresh request
+      if (typeof window !== 'undefined') {
+        window.location.replace('/');
+      } else {
+        router.replace('/');
+      }
       return;
     } catch (err) {
       console.error("Login error:", err);
